@@ -1,9 +1,8 @@
--- =====================================================================
--- COMP 642 Course Project - Event Ticketing Platform
+
 -- File 04: Least-privilege login for the Python/FastAPI app
 -- Run as root ONCE. The app never uses root.
 -- Change the password here AND in your local .env (never commit .env).
--- =====================================================================
+
 
 CREATE USER IF NOT EXISTS 'ticket_app'@'%' IDENTIFIED BY 'ChangeMe_642!';
 
