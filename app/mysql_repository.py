@@ -18,7 +18,7 @@ VALID_PAYMENT_METHODS = frozenset({"credit_card", "debit_card", "paypal", "apple
 
 #Raised when a ticket purchase cannot be completed (nothing is saved).
 class PurchaseError(Exception):
-    
+    pass
 
 #One line of a purchase request: which ticket type and how many.
 @dataclass(frozen=True)
