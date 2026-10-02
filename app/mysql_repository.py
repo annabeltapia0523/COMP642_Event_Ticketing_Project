@@ -67,8 +67,24 @@ class MySQLRepository:
             password=os.getenv("MYSQL_PASSWORD", ""),
             database=os.getenv("MYSQL_DATABASE", "event_ticketing_db"),
             autocommit=True,  # reads commit instantly; purchases open a transaction
+            **cls._ssl_options(),
         )
         return cls(pool)
+
+    @staticmethod
+    def _ssl_options() -> dict[str, Any]:
+        #Cloud DB (Aiven): set MYSQL_SSL_CA to the CA file -> encrypted AND server identity verified.
+        #Local DB: leave it unset -> plain local connection, nothing changes.
+        ca_path = os.getenv("MYSQL_SSL_CA")
+        if not ca_path:
+            return {}
+        if not os.path.isfile(ca_path):
+            raise FileNotFoundError(f"MYSQL_SSL_CA file not found: {ca_path}")
+        return {
+            "ssl_ca": ca_path,
+            "ssl_verify_cert": True,      # reject servers not signed by this CA
+            "ssl_verify_identity": True,  # hostname must match the certificate
+        }
 
     @contextmanager
     def _cursor(self) -> Iterator[Any]:
