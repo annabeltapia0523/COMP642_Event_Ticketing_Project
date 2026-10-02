@@ -15,6 +15,15 @@ import mysql.connector
 from mysql.connector.pooling import MySQLConnectionPool
 
 VALID_PAYMENT_METHODS = frozenset({"credit_card", "debit_card", "paypal", "apple_pay"})
+DEFAULT_TOP_CUSTOMERS = 5
+
+#Every event -> its ticket lines -> their orders. LEFT JOINs keep events with zero sales (Queries 3 and 5).
+EVENT_SALES_JOINS = """
+    FROM events AS e
+    LEFT JOIN ticket_types AS t  ON t.event_id        = e.event_id
+    LEFT JOIN order_items  AS oi ON oi.ticket_type_id = t.ticket_type_id
+    LEFT JOIN orders       AS o  ON o.order_id        = oi.order_id
+"""
 
 #Raised when a ticket purchase cannot be completed (nothing is saved).
 class PurchaseError(Exception):
@@ -132,6 +141,21 @@ class MySQLRepository:
             (event_id,),
         )
         return event
+
+    def list_events_at_venue(self, venue_id: int) -> list[dict[str, Any]]:
+        #Query 1: all events at one venue (joins events + venues + event_categories).
+        return self._fetch_all(
+            """
+            SELECT v.name AS venue, e.event_id, e.title, c.name AS category,
+                   e.start_datetime, e.status
+            FROM events AS e
+            JOIN venues           AS v ON v.venue_id    = e.venue_id
+            JOIN event_categories AS c ON c.category_id = e.category_id
+            WHERE e.venue_id = %s
+            ORDER BY e.start_datetime
+            """,
+            (venue_id,),
+        )
 
     # Users  (POST /users, GET /users/{id}/orders)
     def create_user(
@@ -279,19 +303,101 @@ class MySQLRepository:
 
 
     # Admin analytics (the 8 required queries, reusable by the API)
+    def tickets_sold_by_event(self) -> list[dict[str, Any]]:
+        #Query 3: paid tickets per event; events with no sales show 0.
+        return self._fetch_all(
+            """
+            SELECT e.event_id, e.title,
+                   CAST(COALESCE(SUM(CASE WHEN o.status = 'paid' THEN oi.quantity END), 0)
+                       AS UNSIGNED) AS tickets_sold
+            """
+            + EVENT_SALES_JOINS
+            + """
+            GROUP BY e.event_id, e.title
+            ORDER BY tickets_sold DESC
+            """
+        )
+
+    def get_event_inventory(self, event_id: int) -> list[dict[str, Any]]:
+        #Query 4: remaining tickets per ticket type for one event.
+        #remaining_audit recomputes stock from paid sales; it must equal remaining.
+        return self._fetch_all(
+            """
+            SELECT t.ticket_type_id, t.name AS ticket_type, t.price,
+                   t.quantity_total,
+                   t.quantity_total - t.quantity_available AS sold,
+                   t.quantity_available AS remaining,
+                   CAST(t.quantity_total - COALESCE((
+                       SELECT SUM(oi.quantity)
+                       FROM order_items AS oi
+                       JOIN orders      AS o ON o.order_id = oi.order_id
+                       WHERE oi.ticket_type_id = t.ticket_type_id
+                         AND o.status = 'paid'
+                   ), 0) AS SIGNED) AS remaining_audit
+            FROM ticket_types AS t
+            WHERE t.event_id = %s
+            ORDER BY t.price
+            """,
+            (event_id,),
+        )
+
     def revenue_by_event(self) -> list[dict[str, Any]]:
+        #Query 5: paid revenue per event; events with no sales show 0.
         return self._fetch_all(
             """
             SELECT e.event_id, e.title,
                    COALESCE(SUM(CASE WHEN o.status = 'paid'
                                      THEN oi.quantity * oi.unit_price END), 0) AS revenue
-            FROM events AS e
-            LEFT JOIN ticket_types AS t  ON t.event_id        = e.event_id
-            LEFT JOIN order_items  AS oi ON oi.ticket_type_id = t.ticket_type_id
-            LEFT JOIN orders       AS o  ON o.order_id        = oi.order_id
+            """
+            + EVENT_SALES_JOINS
+            + """
             GROUP BY e.event_id, e.title
             ORDER BY revenue DESC
             """
+        )
+
+    def top_customers(self, limit: int = DEFAULT_TOP_CUSTOMERS) -> list[dict[str, Any]]:
+        #Query 6: customers ranked by paid tickets bought. RANK() lets ties share a place.
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        return self._fetch_all(
+            """
+            SELECT RANK() OVER (ORDER BY SUM(oi.quantity) DESC) AS rank_no,
+                   u.user_id,
+                   CONCAT(u.first_name, ' ', u.last_name) AS customer,
+                   COUNT(DISTINCT o.order_id) AS orders_placed,
+                   CAST(SUM(oi.quantity) AS UNSIGNED) AS tickets_bought,
+                   SUM(oi.quantity * oi.unit_price) AS amount_spent
+            FROM users AS u
+            JOIN orders      AS o  ON o.user_id   = u.user_id
+            JOIN order_items AS oi ON oi.order_id = o.order_id
+            WHERE o.status = 'paid'
+            GROUP BY u.user_id, u.first_name, u.last_name
+            ORDER BY tickets_bought DESC, amount_spent DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+
+    def events_with_revenue_above(self, threshold: Decimal) -> list[dict[str, Any]]:
+        #Query 7: events whose paid revenue is above threshold (HAVING filters after SUM).
+        if threshold < 0:
+            raise ValueError("threshold cannot be negative")
+        return self._fetch_all(
+            """
+            SELECT e.event_id, e.title,
+                   CAST(SUM(oi.quantity) AS UNSIGNED) AS tickets_sold,
+                   SUM(oi.quantity * oi.unit_price) AS revenue
+            FROM events AS e
+            JOIN ticket_types AS t  ON t.event_id        = e.event_id
+            JOIN order_items  AS oi ON oi.ticket_type_id = t.ticket_type_id
+            JOIN orders       AS o  ON o.order_id        = oi.order_id
+            WHERE o.status = 'paid'
+            GROUP BY e.event_id, e.title
+            HAVING revenue > %s
+            ORDER BY revenue DESC
+            """,
+            (threshold,),
         )
 
     def monthly_revenue(self) -> list[dict[str, Any]]:
