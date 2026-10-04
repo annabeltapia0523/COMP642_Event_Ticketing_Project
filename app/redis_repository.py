@@ -95,7 +95,7 @@ class RedisRepository:
                     SELECT event_id, title, venue_id, category_id, 
                            start_datetime, end_datetime, status, 
                            created_at, updated_at, created_by
-                    FROM EVENTS
+                    FROM events
                     WHERE event_id = %s
                 """
                 cursor.execute(query, (int(event_id),))
