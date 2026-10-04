@@ -12,13 +12,19 @@ Install dependencies:
 
 pip install -r requirements.txt
 
-Start FastAPI:
+Make sure MySQL, MongoDB, and Redis connection settings are configured
+in a local `.env` file and Redis is running.
+
+Start the API:
 
 uvicorn app.main:app --reload
 
-Then open the Swagger API documentation at:
+Then open the Swagger documentation:
 
 http://127.0.0.1:8000/docs
+
+Note: MongoDB Atlas may require the user's current IP address to be
+allowed in Atlas Network Access.
 
 ## Databases
 
